@@ -3,6 +3,9 @@ name: Deploy Frontend to GitHub Pages
 on:
   push:
     branches: ["main"]
+  # Rebuild every morning so the site picks up the newest FRED numbers
+  schedule:
+    - cron: "17 12 * * *"
   workflow_dispatch:
 
 permissions:

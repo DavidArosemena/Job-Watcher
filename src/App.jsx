@@ -92,7 +92,7 @@ const fallbackTrendPointsBySector = {
   ],
 };
 
-function Sparkline({ points }) {
+function Sparkline({ points, title, badge }) {
   const max = Math.max(...points.map((p) => p.value));
   const min = Math.min(...points.map((p) => p.value));
   const range = max - min || 1;
@@ -110,19 +110,36 @@ function Sparkline({ points }) {
   return (
     <div className="chart-card">
       <div className="chart-head">
-        <h3>Recent Forecast Trend</h3>
-        <span>Endpoint is Connected</span>
+        <h3>{title}</h3>
+        <span>{badge}</span>
       </div>
       <svg viewBox={`0 0 ${width} ${height}`} className="sparkline" aria-label="forecast trend chart">
         <path d={d} fill="none" stroke="currentColor" strokeWidth="3" />
       </svg>
       <div className="sparkline-labels">
         {points.map((point) => (
-          <span key={point.month}>{point.month}</span>
+          <span key={point.date || point.month}>{point.month}</span>
         ))}
       </div>
     </div>
   );
+}
+
+function formatMonth(dateString) {
+  if (!dateString) return "";
+  return new Date(`${dateString}T00:00:00Z`).toLocaleString("en-US", {
+    month: "short",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+}
+
+function changeNote(indicator, suffix = "") {
+  if (!indicator || indicator.previous == null) return "";
+  const diff = indicator.value - indicator.previous;
+  if (Math.abs(diff) < 0.005) return "unchanged from prior month";
+  const sign = diff > 0 ? "up" : "down";
+  return `${sign} ${Math.abs(diff).toFixed(2)}${suffix} from prior month`;
 }
 
 function formatGrowth(value) {
@@ -133,7 +150,7 @@ function formatGrowth(value) {
 
 function App() {
   const [selectedSector, setSelectedSector] = useState("PAYEMS");
-  const [snapshot, setSnapshot] = useState(fallbackSnapshot);
+  const [macro, setMacro] = useState(null);
   const [prediction, setPrediction] = useState({
     ok: true,
     sector: "PAYEMS",
@@ -142,18 +159,43 @@ function App() {
     source: "fallback",
   });
   const [liveSectorSummary, setLiveSectorSummary] = useState(fallbackSnapshot.sectors);
-  const [loadingSnapshot, setLoadingSnapshot] = useState(false);
+  const [loadingSnapshot, setLoadingSnapshot] = useState(true);
   const [loadingPrediction, setLoadingPrediction] = useState(false);
   const [loadingSectorSummary, setLoadingSectorSummary] = useState(false);
-  const [error, setError] = useState("");
 
+  // Real economic data from FRED, downloaded during each build into public/macro.json
   useEffect(() => {
-    setSnapshot(fallbackSnapshot);
-    setLoadingSnapshot(false);
-    setError(
-      "Macro dashboard cards are currently using demo data. The live sector forecast and sector summary below are connected to the Obi backend."
-    );
+    const controller = new AbortController();
+
+    fetch(`${import.meta.env.BASE_URL}macro.json`, { signal: controller.signal })
+      .then((response) => {
+        if (!response.ok) throw new Error(`macro.json request failed: ${response.status}`);
+        return response.json();
+      })
+      .then((data) => setMacro(data))
+      .catch((err) => {
+        if (err.name !== "AbortError") console.error(err);
+      })
+      .finally(() => setLoadingSnapshot(false));
+
+    return () => controller.abort();
   }, []);
+
+  const macroIsReal = Boolean(macro?.indicators);
+  const ind = macro?.indicators || {};
+  const snapshot = macroIsReal
+    ? {
+        unemployment_rate: ind.unemployment_rate.value,
+        cpi: ind.cpi.value,
+        federal_funds_rate: ind.federal_funds_rate.value,
+        labor_force_participation: ind.labor_force_participation.value,
+      }
+    : fallbackSnapshot;
+
+  const cardNote = (indicator, fallbackText, suffix) =>
+    macroIsReal
+      ? `${formatMonth(indicator.date)} · ${changeNote(indicator, suffix)}`
+      : `${fallbackText} (demo value)`;
 
   useEffect(() => {
     const controller = new AbortController();
@@ -263,10 +305,11 @@ function App() {
     [selectedSector]
   );
 
-    const selectedTrendPoints = useMemo(
-    () => fallbackTrendPointsBySector[selectedSector] || fallbackTrendPointsBySector.PAYEMS,
-    [selectedSector]
-  );
+  const realTrendPoints = macro?.sector_growth?.[selectedSector];
+  const selectedTrendPoints =
+    realTrendPoints && realTrendPoints.length > 1
+      ? realTrendPoints
+      : fallbackTrendPointsBySector[selectedSector] || fallbackTrendPointsBySector.PAYEMS;
 
   return (
     <div className="app-shell">
@@ -306,7 +349,7 @@ function App() {
         <section className="status-grid">
           <article className="status-card">
             <p className="label">Data Source</p>
-            <h3>FRED + ML Pipeline</h3>
+            <h3>{macroIsReal ? "Live FRED + ML Pipeline" : "FRED + ML Pipeline"}</h3>
           </article>
           <article className="status-card">
             <p className="label">Frontend</p>
@@ -324,7 +367,15 @@ function App() {
           </article>
           <article className="status-card">
             <p className="label">Last Updated</p>
-            <h3>April 2026</h3>
+            <h3>
+              {macroIsReal
+                ? new Date(macro.fetched_at).toLocaleDateString("en-US", {
+                    month: "long",
+                    day: "numeric",
+                    year: "numeric",
+                  })
+                : "Demo data"}
+            </h3>
           </article>
         </section>
 
@@ -332,22 +383,22 @@ function App() {
           <article className="metric-card">
             <span>Unemployment Rate</span>
             <strong>{loadingSnapshot ? "..." : `${snapshot.unemployment_rate}%`}</strong>
-            <small>Latest macro snapshot</small>
+            <small>{cardNote(ind.unemployment_rate, "Latest macro snapshot", " pts")}</small>
           </article>
           <article className="metric-card">
             <span>CPI</span>
             <strong>{loadingSnapshot ? "..." : snapshot.cpi}</strong>
-            <small>Consumer Price Index</small>
+            <small>{cardNote(ind.cpi, "Consumer Price Index", "")}</small>
           </article>
           <article className="metric-card">
             <span>Federal Funds Rate</span>
             <strong>{loadingSnapshot ? "..." : `${snapshot.federal_funds_rate}%`}</strong>
-            <small>Interest rate signal</small>
+            <small>{cardNote(ind.federal_funds_rate, "Interest rate signal", " pts")}</small>
           </article>
           <article className="metric-card">
             <span>Labor Force Participation</span>
             <strong>{loadingSnapshot ? "..." : `${snapshot.labor_force_participation}%`}</strong>
-            <small>Participation indicator</small>
+            <small>{cardNote(ind.labor_force_participation, "Participation indicator", " pts")}</small>
           </article>
         </section>
 
@@ -390,7 +441,11 @@ function App() {
             </p>
           </article>
 
-          <Sparkline points={selectedTrendPoints} />
+          <Sparkline
+            points={selectedTrendPoints}
+            title={realTrendPoints ? "Actual Monthly Job Growth" : "Recent Trend"}
+            badge={realTrendPoints ? "Real FRED data, % change by month" : "Demo data"}
+          />
         </section>
 
         <section id="context" className="panel-grid">
